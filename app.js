@@ -97,9 +97,9 @@ function humanizeError(err) {
   if (status === 401)
     return "Clé refusée par Mistral (erreur 401). Vérifiez qu'elle est complète et sans espace en trop. Une clé toute neuve peut mettre une minute à s'activer.";
   if (status === 403)
-    return "Accès refusé (erreur 403). Votre compte n'a peut-être pas accès à ce modèle." + (detail ? " Réponse de Mistral : " + detail : "");
+    return "Accès refusé (erreur 403) : ce modèle n'est pas inclus dans votre offre Mistral. Choisissez Mistral Medium ou Small." + (detail ? " Réponse de Mistral : " + detail : "");
   if (status === 429)
-    return "Limite d'utilisation Mistral atteinte (erreur 429). Patientez un instant, ou vérifiez qu'il vous reste du crédit." + (detail ? " " + detail : "");
+    return "Mistral est saturé ou votre limite d'utilisation est atteinte (erreur 429), malgré plusieurs nouvelles tentatives. Réessayez dans quelques minutes. Avec l'offre gratuite de Mistral, ces saturations sont plus fréquentes aux heures de pointe." + (detail ? " Réponse de Mistral : " + detail : "");
   if (status === 413)
     return "Fichier trop volumineux (erreur 413). Raccourcissez l'enregistrement ou exportez-le dans un format plus léger (mp3, m4a).";
   if (status === 400 || status === 422)
@@ -167,6 +167,23 @@ async function apiError(res, label) {
   return e;
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const RETRY_DELAYS = [8000, 20000]; // secondes d'attente avant chaque nouvelle tentative
+
+// Relance automatiquement un appel quand Mistral est saturé (429) ou en erreur (5xx).
+async function withRetry(fn, onWait) {
+  for (let attempt = 0; ; attempt++) {
+    try {
+      return await fn();
+    } catch (err) {
+      const retryable = err && (err.status === 429 || err.status >= 500);
+      if (!retryable || attempt >= RETRY_DELAYS.length) throw err;
+      if (onWait) onWait(attempt + 1, RETRY_DELAYS[attempt] / 1000);
+      await sleep(RETRY_DELAYS[attempt]);
+    }
+  }
+}
+
 async function callTranscription(file, language) {
   const fd = new FormData();
   fd.append("file", file, file.name);
@@ -197,6 +214,38 @@ async function callChat(messages, model, jsonMode, maxTokens) {
   const choice = (data.choices && data.choices[0]) || {};
   if (choice.finish_reason === "length") console.warn("Réponse Mistral tronquée, tentative de réparation du JSON.");
   return (choice.message && choice.message.content) || "";
+}
+
+// Modèles de rédaction, du plus soigné au plus économique. Si le modèle choisi est
+// refusé (403, non inclus dans l'offre) ou saturé, on bascule sur le suivant.
+const CHAT_FALLBACK = ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"];
+
+async function callChatWithFallback(messages, preferred, jsonMode, maxTokens, onInfo) {
+  const start = Math.max(0, CHAT_FALLBACK.indexOf(preferred));
+  const chain = [preferred, ...CHAT_FALLBACK.slice(start + 1)].filter((m, i, a) => a.indexOf(m) === i);
+  let lastErr;
+  for (let i = 0; i < chain.length; i++) {
+    const model = chain[i];
+    try {
+      const content = await withRetry(
+        () => callChat(messages, model, jsonMode, maxTokens),
+        (n, s) => onInfo && onInfo(`Mistral est saturé, nouvelle tentative ${n}/${RETRY_DELAYS.length} dans ${s} s…`)
+      );
+      return { content, model };
+    } catch (err) {
+      lastErr = err;
+      const canFallBack = err && (err.status === 403 || err.status === 429 || err.status >= 500);
+      if (!canFallBack || i === chain.length - 1) throw err;
+      if (onInfo) onInfo(err.status === 403
+        ? `${modelLabel(model)} n'est pas inclus dans votre offre Mistral : passage à ${modelLabel(chain[i + 1])}…`
+        : `${modelLabel(model)} est indisponible : passage à ${modelLabel(chain[i + 1])}…`);
+    }
+  }
+  throw lastErr;
+}
+
+function modelLabel(id) {
+  return { "mistral-large-latest": "Mistral Large", "mistral-medium-latest": "Mistral Medium", "mistral-small-latest": "Mistral Small" }[id] || id;
 }
 
 async function callModels() {
@@ -446,8 +495,12 @@ async function onIdentify() {
     // On travaille sur les labels d'origine pour que le modèle garde des clés stables.
     const text = turnsToText(state.turns).slice(0, 120000);
     const user = `Intervenants à identifier : ${ids.join(", ")}.\n\nTranscription :\n${text}`;
-    const raw = await callChat([{ role: "system", content: SPEAKERS_SYSTEM }, { role: "user", content: user }], "mistral-medium-latest", true);
-    const mapping = extractJSON(raw);
+    const { content } = await callChatWithFallback(
+      [{ role: "system", content: SPEAKERS_SYSTEM }, { role: "user", content: user }],
+      "mistral-medium-latest", true, null,
+      (m) => showMsg("msgIdentify", "info", escapeHtml(m))
+    );
+    const mapping = extractJSON(content);
     let found = 0;
     for (const id of ids) {
       const v = typeof mapping[id] === "string" ? mapping[id].trim() : "";
@@ -486,7 +539,11 @@ async function onTranscribe() {
     $("spinTranscribeText").textContent = `Transcription en cours… ${Math.floor(s / 60)} min ${pad2(s % 60)} s (compter environ 1 min pour 15 min d'audio)`;
   }, 1000);
   try {
-    const data = await callTranscription(file, $("lang").value);
+    const data = await withRetry(
+      () => callTranscription(file, $("lang").value),
+      (n, s) => showMsg("msgTranscribe", "info", `Mistral est saturé, nouvelle tentative ${n}/${RETRY_DELAYS.length} dans ${s} s…`)
+    );
+    showMsg("msgTranscribe", "", "");
     state.turns = normalizeTurns(data);
     state.names = {};
     state.report = null;
@@ -779,14 +836,22 @@ async function onReport() {
       "Transcription :",
       plainTranscript(),
     ].filter((l) => l !== "").join("\n");
-    const raw = await callChat(
+    const chosen = $("chatModel").value;
+    const { content, model } = await callChatWithFallback(
       [{ role: "system", content: REPORT_SYSTEM }, { role: "user", content: user }],
-      $("chatModel").value, true, 12000
+      chosen, true, 12000,
+      (m) => showMsg("msgReport", "info", escapeHtml(m))
     );
-    const report = normalizeReport(extractJSON(raw), meta);
+    const report = normalizeReport(extractJSON(content), meta);
     if (!report.synthese.length && !report.sections.length) throw new Error("Le compte rendu généré est vide. Relancez la génération.");
     state.report = report;
     renderReportPreview(report);
+    if (model !== chosen) {
+      showMsg("msgReport", "info", `Compte rendu rédigé avec ${modelLabel(model)}, car ${modelLabel(chosen)} n'était pas disponible avec votre clé.`);
+      $("chatModel").value = model;
+    } else {
+      showMsg("msgReport", "", "");
+    }
     $("reportBlock").classList.remove("hidden");
     $("reportBlock").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
