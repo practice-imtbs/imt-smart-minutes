@@ -3,7 +3,7 @@
 **De votre enregistrement au compte rendu, en quelques clics.**
 Une application du service PracTice, IMT Business School.
 
-👉 **Utiliser l'application : https://julienmorice.github.io/imt-smart-minutes/**
+👉 **Utiliser l'application : https://practice-imtbs.github.io/imt-smart-minutes/**
 
 ## Ce que fait l'application
 
