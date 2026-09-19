@@ -1,0 +1,17 @@
+# IMT Smart Minutes — Proxy Cloudflare Worker (rédaction via ILAAS)
+#
+# Déploiement :
+#   cd proxy
+#   npx wrangler deploy
+#
+# Secret (NE JAMAIS le mettre dans ce fichier) :
+#   npx wrangler secret put ILAAS_API_KEY
+
+name = "imt-smart-minutes-proxy"
+main = "worker.js"
+compatibility_date = "2026-01-01"
+
+[vars]
+# Moteur souverain ILAAS (API compatible OpenAI)
+ILAAS_BASE  = "https://llm.ilaas.fr/v1"
+ILAAS_MODEL = "qwen-3.6-35b-instruct"

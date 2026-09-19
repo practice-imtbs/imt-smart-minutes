@@ -26,8 +26,8 @@ L'application utilise votre propre clé Mistral. Mistral propose un crédit grat
 ## Confidentialité
 
 - L'application est un site statique : il n'y a **aucun serveur** et **aucune base de données**.
-- L'audio et la transcription ne sont envoyés **qu'à l'API Mistral**. Tout disparaît à la fermeture de l'onglet.
-- La clé API reste dans votre navigateur. Elle n'est mémorisée sur l'appareil que si vous cochez « Mémoriser ma clé ».
+- L'audio n'est envoyé **qu'à Mistral** (transcription) ; le texte de la transcription n'est envoyé **qu'à ILAAS** (rédaction), via un relais Cloudflare qui ne conserve rien. Tout disparaît à la fermeture de l'onglet.
+- La clé Mistral reste dans votre navigateur. Elle n'est mémorisée sur l'appareil que si vous cochez « Mémoriser ma clé ».
 - Ne traitez pas de données sensibles sans la validation de votre établissement.
 
 ## Limites
@@ -41,11 +41,23 @@ L'application utilise votre propre clé Mistral. Mistral propose un crédit grat
 | Élément | Choix |
 |---|---|
 | Transcription et séparation des intervenants | `voxtral-mini-2602` (Voxtral Mini Transcribe V2), `diarize=true` |
-| Noms et compte rendu | `mistral-medium-latest` par défaut (Large ou Small au choix) |
+| Noms et compte rendu | `qwen-3.6-35b-instruct` sur [ILAAS](https://www.ilaas.fr) (IA souveraine ESR), via le proxy `proxy/` |
 | Export Word | librairie [`docx`](https://www.npmjs.com/package/docx) 8.5, dans le navigateur |
 | Hébergement | GitHub Pages |
 
-Fichiers : `index.html` (interface), `style.css` (charte PracTice), `app.js` (logique).
+Fichiers : `index.html` (interface), `style.css` (charte PracTice), `app.js` (logique), `proxy/` (relais Cloudflare Worker vers ILAAS).
+
+### Proxy ILAAS (Cloudflare Worker)
+
+La clé ILAAS n'est **jamais** dans le code ni dans le navigateur : elle est stockée comme secret du Worker.
+
+```bash
+cd proxy
+npx wrangler secret put ILAAS_API_KEY
+npx wrangler deploy
+```
+
+Le modèle (`ILAAS_MODEL`) se change dans `proxy/wrangler.toml`. Le Worker n'accepte que les requêtes venant de `practice-imtbs.github.io`.
 
 ### Lancer en local
 

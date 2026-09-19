@@ -6,6 +6,9 @@
 
 const API_BASE = "https://api.mistral.ai/v1";
 const TRANSCRIBE_MODEL = "voxtral-mini-2602";
+// Rédaction (compte rendu, noms) : ILAAS via notre proxy Cloudflare, qui détient la clé.
+const WRITER_URL = "https://imt-smart-minutes-proxy.julienmorice.workers.dev";
+const WRITER_LABEL = "Qwen 3.6 (ILAAS)";
 const VIOLET = "AD1D89";
 const BLEU = "00B8DE";
 const FONT = "Arial";
@@ -94,6 +97,13 @@ function humanizeError(err) {
   const status = err && err.status;
   const detail = shortDetail(err);
   const msg = (err && err.message ? err.message : String(err)).toLowerCase();
+  if (err && err.source === "writer") {
+    if (status === 504 || /timeout/i.test(detail))
+      return "La rédaction a pris trop de temps et le service ILAAS a coupé la connexion. Relancez la génération.";
+    if (status === 413)
+      return "La transcription est trop longue pour être rédigée en une seule fois.";
+    return `Le service de rédaction (ILAAS) a renvoyé une erreur (${status}).` + (detail ? " Détail : " + detail : "") + " Réessayez dans un instant.";
+  }
   if (status === 401)
     return "Clé refusée par Mistral (erreur 401). Vérifiez qu'elle est complète et sans espace en trop. Une clé toute neuve peut mettre une minute à s'activer.";
   if (status === 403)
@@ -200,52 +210,61 @@ async function callTranscription(file, language) {
   return res.json();
 }
 
-async function callChat(messages, model, jsonMode, maxTokens) {
-  const body = { model, messages, temperature: 0.2 };
+// Réassemble le flux SSE relayé par le proxy en une seule chaîne de texte.
+async function readSSEStream(response) {
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder("utf-8");
+  let buffer = "", text = "", finishReason = null;
+  const handleBlock = (block) => {
+    for (const line of block.split("\n")) {
+      if (!line.startsWith("data:")) continue;
+      const payload = line.slice(5).trim();
+      if (!payload || payload === "[DONE]") continue;
+      let chunk;
+      try { chunk = JSON.parse(payload); } catch (e) { continue; }
+      const choice = chunk.choices && chunk.choices[0];
+      if (!choice) continue;
+      const piece = choice.delta && choice.delta.content;
+      if (typeof piece === "string") text += piece;
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+    }
+  };
+  for (;;) {
+    const { done, value } = await reader.read();
+    buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
+    const blocks = buffer.split(/\r?\n\r?\n/);
+    buffer = done ? "" : blocks.pop();
+    blocks.forEach(handleBlock);
+    if (done) break;
+  }
+  if (finishReason === "length") console.warn("Réponse tronquée, tentative de réparation du JSON.");
+  return text;
+}
+
+async function callWriterOnce(messages, jsonMode, maxTokens) {
+  const body = { messages, temperature: 0.2, max_tokens: maxTokens || 4000 };
   if (jsonMode) body.response_format = { type: "json_object" };
-  if (maxTokens) body.max_tokens = maxTokens;
-  const res = await fetch(`${API_BASE}/chat/completions`, {
+  const res = await fetch(WRITER_URL, {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey()}`, "Content-Type": "application/json" },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(body),
   });
-  if (!res.ok) throw await apiError(res, "/chat/completions");
-  const data = await res.json();
-  const choice = (data.choices && data.choices[0]) || {};
-  if (choice.finish_reason === "length") console.warn("Réponse Mistral tronquée, tentative de réparation du JSON.");
-  return (choice.message && choice.message.content) || "";
-}
-
-// Modèles de rédaction, du plus soigné au plus économique. Si le modèle choisi est
-// refusé (403, non inclus dans l'offre) ou saturé, on bascule sur le suivant.
-const CHAT_FALLBACK = ["mistral-large-latest", "mistral-medium-latest", "mistral-small-latest"];
-
-async function callChatWithFallback(messages, preferred, jsonMode, maxTokens, onInfo) {
-  const start = Math.max(0, CHAT_FALLBACK.indexOf(preferred));
-  const chain = [preferred, ...CHAT_FALLBACK.slice(start + 1)].filter((m, i, a) => a.indexOf(m) === i);
-  let lastErr;
-  for (let i = 0; i < chain.length; i++) {
-    const model = chain[i];
-    try {
-      const content = await withRetry(
-        () => callChat(messages, model, jsonMode, maxTokens),
-        (n, s) => onInfo && onInfo(`Mistral est saturé, nouvelle tentative ${n}/${RETRY_DELAYS.length} dans ${s} s…`)
-      );
-      return { content, model };
-    } catch (err) {
-      lastErr = err;
-      const canFallBack = err && (err.status === 403 || err.status === 429 || err.status >= 500);
-      if (!canFallBack || i === chain.length - 1) throw err;
-      if (onInfo) onInfo(err.status === 403
-        ? `${modelLabel(model)} n'est pas inclus dans votre offre Mistral : passage à ${modelLabel(chain[i + 1])}…`
-        : `${modelLabel(model)} est indisponible : passage à ${modelLabel(chain[i + 1])}…`);
-    }
+  if (!res.ok) {
+    const e = await apiError(res, "proxy ILAAS");
+    e.source = "writer";
+    throw e;
   }
-  throw lastErr;
+  if ((res.headers.get("Content-Type") || "").includes("text/event-stream")) return readSSEStream(res);
+  const data = await res.json();
+  return data.content || "";
 }
 
-function modelLabel(id) {
-  return { "mistral-large-latest": "Mistral Large", "mistral-medium-latest": "Mistral Medium", "mistral-small-latest": "Mistral Small" }[id] || id;
+// Rédaction via ILAAS, avec nouvelles tentatives si le service est saturé.
+function callWriter(messages, jsonMode, maxTokens, onInfo) {
+  return withRetry(
+    () => callWriterOnce(messages, jsonMode, maxTokens),
+    (n, s) => onInfo && onInfo(`Le service de rédaction est saturé, nouvelle tentative ${n}/${RETRY_DELAYS.length} dans ${s} s…`)
+  );
 }
 
 async function callModels() {
@@ -319,7 +338,7 @@ function repairJSON(text) {
 }
 
 function extractJSON(raw) {
-  const cleaned = (raw || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
+  const cleaned = (raw || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```\s*$/i, "").trim();
   try { return JSON.parse(cleaned); } catch (_) {}
   const first = cleaned.indexOf("{");
   const last = cleaned.lastIndexOf("}");
@@ -495,9 +514,9 @@ async function onIdentify() {
     // On travaille sur les labels d'origine pour que le modèle garde des clés stables.
     const text = turnsToText(state.turns).slice(0, 120000);
     const user = `Intervenants à identifier : ${ids.join(", ")}.\n\nTranscription :\n${text}`;
-    const { content } = await callChatWithFallback(
+    const content = await callWriter(
       [{ role: "system", content: SPEAKERS_SYSTEM }, { role: "user", content: user }],
-      "mistral-medium-latest", true, null,
+      true, 1000,
       (m) => showMsg("msgIdentify", "info", escapeHtml(m))
     );
     const mapping = extractJSON(content);
@@ -836,22 +855,16 @@ async function onReport() {
       "Transcription :",
       plainTranscript(),
     ].filter((l) => l !== "").join("\n");
-    const chosen = $("chatModel").value;
-    const { content, model } = await callChatWithFallback(
+    const content = await callWriter(
       [{ role: "system", content: REPORT_SYSTEM }, { role: "user", content: user }],
-      chosen, true, 12000,
+      true, 12000,
       (m) => showMsg("msgReport", "info", escapeHtml(m))
     );
     const report = normalizeReport(extractJSON(content), meta);
     if (!report.synthese.length && !report.sections.length) throw new Error("Le compte rendu généré est vide. Relancez la génération.");
     state.report = report;
     renderReportPreview(report);
-    if (model !== chosen) {
-      showMsg("msgReport", "info", `Compte rendu rédigé avec ${modelLabel(model)}, car ${modelLabel(chosen)} n'était pas disponible avec votre clé.`);
-      $("chatModel").value = model;
-    } else {
-      showMsg("msgReport", "", "");
-    }
+    showMsg("msgReport", "", "");
     $("reportBlock").classList.remove("hidden");
     $("reportBlock").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {

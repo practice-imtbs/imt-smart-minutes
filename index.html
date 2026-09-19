@@ -128,12 +128,7 @@
     <input type="text" id="metaObjet" />
     <label for="metaParticipants">Participants, un par ligne <span class="caption">(rôle entre parenthèses si besoin)</span></label>
     <textarea id="metaParticipants" rows="3"></textarea>
-    <label for="chatModel">Modèle de rédaction</label>
-    <select id="chatModel">
-      <option value="mistral-medium-latest" selected>Mistral Medium (recommandé)</option>
-      <option value="mistral-large-latest">Mistral Large (offre payante Mistral uniquement)</option>
-      <option value="mistral-small-latest">Mistral Small (rapide et économique)</option>
-    </select>
+    <p class="caption">Rédaction assurée par le modèle Qwen 3.6 hébergé par <strong>ILAAS</strong>, infrastructure d'IA souveraine de l'enseignement supérieur et de la recherche. Cette étape ne consomme pas votre crédit Mistral.</p>
     <div class="actions"><button id="btnReport" class="primary-lg">Générer le compte rendu</button></div>
     <div class="spinner" id="spinReport">Rédaction du compte rendu… (30 s à 2 min)</div>
     <div id="msgReport"></div>
@@ -152,7 +147,7 @@
 
   <footer>
     <p>IMT Smart Minutes · Service PracTice, IMT Business School<br />
-    Aucune donnée n'est conservée : l'audio est envoyé uniquement à l'API Mistral pour la transcription, et tout disparaît à la fermeture de l'onglet.<br />
+    Aucune donnée n'est conservée par l'application : l'audio est envoyé à Mistral pour la transcription, le texte à ILAAS pour la rédaction, et tout disparaît à la fermeture de l'onglet.<br />
     Ne traitez pas de données sensibles sans validation de votre établissement.</p>
   </footer>
 </main>
