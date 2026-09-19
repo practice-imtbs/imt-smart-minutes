@@ -5,3 +5,4 @@ _exemples/
 *.docx
 .DS_Store
 .claude/
+.wrangler/
