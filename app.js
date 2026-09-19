@@ -933,6 +933,7 @@ document.addEventListener("DOMContentLoaded", () => {
   state.audio = new Audio();
   state.audio.preload = "metadata";
   $("metaDate").value = todayISO();
+  $("year").textContent = new Date().getFullYear();
 
   const saved = storageGet();
   if (saved) { $("apiKey").value = saved; $("rememberKey").checked = true; }

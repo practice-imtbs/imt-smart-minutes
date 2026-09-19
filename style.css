@@ -194,6 +194,7 @@ details.help li { margin: 3px 0; }
 
 footer { text-align: center; color: var(--muted); font-size: 12.5px; margin-top: 40px; }
 footer a { color: var(--cyan-dark); }
+footer .copyright { margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 12px; }
 
 .hidden { display: none !important; }
 
