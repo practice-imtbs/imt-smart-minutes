@@ -626,18 +626,60 @@ Règles de forme :
 - N'utilise jamais de tiret long (—) ni de tiret demi-cadratin (–) ; utilise des virgules, deux-points ou parenthèses.
 - Pas de Markdown dans les textes (ni **, ni #).
 
-Réponds uniquement par un objet JSON valide, sans texte autour, selon ce schéma :
+Réponds uniquement par un objet JSON valide, sans texte autour. Les six clés (sous_titre, objet, participants, synthese, sections, actions) sont toutes au premier niveau de l'objet ; "synthese" ne contient que des chaînes de caractères et se referme par "]" avant la clé "sections". Schéma :
 {"sous_titre":"nom court de la réunion","objet":"une phrase qui résume l'objet","participants":["Prénom NOM (rôle si connu)"],"synthese":["paragraphe", "..."],"sections":[{"titre":"...","paragraphes":["...", "..."]}],"actions":[{"action":"...","responsable":"...","echeance":"..."}]}`;
 
 function asParagraphs(v) {
-  if (Array.isArray(v)) return v.map((p) => String(p || "").trim()).filter(Boolean);
+  if (Array.isArray(v)) {
+    return v.flatMap((p) => {
+      if (typeof p === "string") return [p.trim()];
+      if (p && typeof p === "object") return asParagraphs(p.paragraphes || p.contenu || p.texte || p.text);
+      return [];
+    }).filter(Boolean);
+  }
   if (typeof v === "string") return v.split(/\n\s*\n|\n/).map((p) => p.trim()).filter(Boolean);
   return [];
 }
 
 function cleanDashes(s) { return String(s || "").replace(/\s*[—–]\s*/g, ", ").replace(/\*\*/g, ""); }
 
+const REPORT_KEYS = ["sous_titre", "objet", "participants", "synthese", "sections", "actions"];
+
+// Répare une erreur fréquente des modèles : une liste mal refermée qui avale les
+// clés suivantes, par ex. "synthese": ["§1", "§2", "sections", [...], "actions", [...]].
+function repairReportShape(raw) {
+  if (!raw || typeof raw !== "object") return {};
+  for (const key of Object.keys(raw)) {
+    const arr = raw[key];
+    if (!Array.isArray(arr)) continue;
+    const kept = [];
+    for (let i = 0; i < arr.length; i++) {
+      const item = arr[i];
+      const name = typeof item === "string" ? item.trim().toLowerCase() : "";
+      if (REPORT_KEYS.includes(name) && name !== key && i + 1 < arr.length && typeof arr[i + 1] !== "string") {
+        if (!raw[name] || (Array.isArray(raw[name]) && !raw[name].length)) raw[name] = arr[i + 1];
+        i++;
+        continue;
+      }
+      // Une section égarée dans la synthèse : on la replace dans les sections.
+      if (key === "synthese" && item && typeof item === "object" && !Array.isArray(item) && item.titre) {
+        raw.sections = Array.isArray(raw.sections) ? raw.sections : [];
+        raw.sections.push(item);
+        continue;
+      }
+      kept.push(item);
+    }
+    raw[key] = kept;
+  }
+  return raw;
+}
+
+function reportLooksValid(r) {
+  return r.synthese.length > 0 && r.sections.length > 0 && r.sections.every((s) => s.titre && s.paragraphes.length);
+}
+
 function normalizeReport(raw, meta) {
+  raw = repairReportShape(raw);
   const r = {};
   r.entete = meta.entete;
   r.sous_titre = cleanDashes(meta.titre || raw.sous_titre || "");
@@ -855,13 +897,23 @@ async function onReport() {
       "Transcription :",
       plainTranscript(),
     ].filter((l) => l !== "").join("\n");
-    const content = await callWriter(
-      [{ role: "system", content: REPORT_SYSTEM }, { role: "user", content: user }],
-      true, 12000,
-      (m) => showMsg("msgReport", "info", escapeHtml(m))
-    );
-    const report = normalizeReport(extractJSON(content), meta);
-    if (!report.synthese.length && !report.sections.length) throw new Error("Le compte rendu généré est vide. Relancez la génération.");
+    const messages = [{ role: "system", content: REPORT_SYSTEM }, { role: "user", content: user }];
+    let report = null;
+    // Deux essais : si la structure renvoyée est incomplète, on redemande en signalant l'erreur.
+    for (let attempt = 1; attempt <= 2 && !report; attempt++) {
+      const content = await callWriter(messages, true, 12000, (m) => showMsg("msgReport", "info", escapeHtml(m)));
+      let candidate = null;
+      try { candidate = normalizeReport(extractJSON(content), meta); } catch (e) { console.warn(e); }
+      if (candidate && reportLooksValid(candidate)) { report = candidate; break; }
+      if (attempt === 1) {
+        showMsg("msgReport", "info", "La première version était mal structurée, nouvelle rédaction en cours…");
+        messages.push({ role: "assistant", content: content.slice(0, 4000) });
+        messages.push({ role: "user", content: "Ta réponse ne respecte pas le schéma JSON demandé : \"synthese\" doit être une liste de paragraphes (chaînes uniquement), puis \"sections\" et \"actions\" doivent être des clés distinctes au premier niveau de l'objet. Réécris le compte rendu complet en respectant exactement le schéma." });
+      } else if (candidate && (candidate.synthese.length || candidate.sections.length)) {
+        report = candidate; // mieux vaut un compte rendu partiel que rien
+      }
+    }
+    if (!report) throw new Error("Le compte rendu généré est incomplet. Relancez la génération.");
     state.report = report;
     renderReportPreview(report);
     showMsg("msgReport", "", "");
