@@ -14,6 +14,10 @@ const BLEU = "00B8DE";
 const FONT = "Arial";
 const KEY_STORAGE = "imtSmartMinutes.apiKey";
 const LONG_TRANSCRIPT = 60000; // caractères, au-delà on prévient l'utilisateur
+// Offre gratuite Mistral : 50 000 tokens/minute pour Voxtral. L'audio compte environ
+// 750 tokens/minute (12,5 par seconde), plus le texte produit : au-delà de ~45 min
+// d'enregistrement, une seule requête dépasse la limite et Mistral répond 429.
+const FREE_TIER_MAX_MINUTES = 45;
 
 // État applicatif : uniquement en mémoire, rien n'est envoyé ailleurs qu'à Mistral.
 const state = {
@@ -24,6 +28,7 @@ const state = {
   audio: null,
   audioUrl: null,
   file: null,
+  duration: 0,      // durée de l'audio déposé, en secondes (0 si inconnue)
 };
 
 const $ = (id) => document.getElementById(id);
@@ -539,11 +544,43 @@ async function onIdentify() {
 
 // ----------------------------- Transcription (action) -----------------------------
 
-function setFile(file) {
+function formatDuration(seconds) {
+  const m = Math.round(seconds / 60);
+  if (m < 1) return `${Math.round(seconds)} s`;
+  return m >= 60 ? `${Math.floor(m / 60)} h ${pad2(m % 60)}` : `${m} min`;
+}
+
+// Lit la durée de l'audio dans le navigateur (sans rien envoyer).
+function readDuration(file) {
+  return new Promise((resolve) => {
+    const a = document.createElement("audio");
+    const url = URL.createObjectURL(file);
+    const done = (d) => { URL.revokeObjectURL(url); resolve(isFinite(d) && d > 0 ? d : 0); };
+    a.preload = "metadata";
+    a.onloadedmetadata = () => done(a.duration);
+    a.onerror = () => done(0);
+    setTimeout(() => done(0), 8000);
+    a.src = url;
+  });
+}
+
+function tooLongMessage() {
+  return `Cet enregistrement dure <strong>${formatDuration(state.duration)}</strong>. Avec l'offre gratuite de Mistral, la transcription est limitée à <strong>environ ${FREE_TIER_MAX_MINUTES} minutes</strong> par fichier (plafond de 50 000 tokens par minute). Deux solutions :<br />
+    1. <strong>Découper l'enregistrement</strong> en parties de ${FREE_TIER_MAX_MINUTES - 5} minutes maximum (par exemple avec QuickTime : Édition › Diviser le clip), puis transcrire chaque partie ;<br />
+    2. <strong>Activer le paiement à l'usage</strong> sur <a href="https://admin.mistral.ai/" target="_blank" rel="noopener">admin.mistral.ai</a> (environ 0,20 € par heure d'audio), qui relève cette limite.`;
+}
+
+async function setFile(file) {
   if (!file) return;
   state.file = file;
+  state.duration = 0;
   $("fileName").textContent = `${file.name} · ${formatSize(file.size)}`;
   showMsg("msgTranscribe", "", "");
+  const d = await readDuration(file);
+  if (state.file !== file) return; // un autre fichier a été choisi entre-temps
+  state.duration = d;
+  if (d) $("fileName").textContent = `${file.name} · ${formatSize(file.size)} · ${formatDuration(d)}`;
+  if (d / 60 > FREE_TIER_MAX_MINUTES) showMsg("msgTranscribe", "warn", tooLongMessage() + "<br />Vous pouvez tout de même essayer si votre compte Mistral est payant.");
 }
 
 async function onTranscribe() {
@@ -558,10 +595,14 @@ async function onTranscribe() {
     $("spinTranscribeText").textContent = `Transcription en cours… ${Math.floor(s / 60)} min ${pad2(s % 60)} s (compter environ 1 min pour 15 min d'audio)`;
   }, 1000);
   try {
-    const data = await withRetry(
-      () => callTranscription(file, $("lang").value),
-      (n, s) => showMsg("msgTranscribe", "info", `Mistral est saturé, nouvelle tentative ${n}/${RETRY_DELAYS.length} dans ${s} s…`)
-    );
+    const tooLong = state.duration / 60 > FREE_TIER_MAX_MINUTES;
+    // Un fichier trop long pour l'offre gratuite échouera à chaque fois : inutile de réessayer.
+    const data = tooLong
+      ? await callTranscription(file, $("lang").value)
+      : await withRetry(
+        () => callTranscription(file, $("lang").value),
+        (n, s) => showMsg("msgTranscribe", "info", `Mistral est saturé, nouvelle tentative ${n}/${RETRY_DELAYS.length} dans ${s} s…`)
+      );
     showMsg("msgTranscribe", "", "");
     state.turns = normalizeTurns(data);
     state.names = {};
@@ -584,7 +625,10 @@ async function onTranscribe() {
     }
     $("step3").scrollIntoView({ behavior: "smooth", block: "start" });
   } catch (err) {
-    showMsg("msgTranscribe", "error", humanizeError(err));
+    const tooLong = state.duration / 60 > FREE_TIER_MAX_MINUTES;
+    showMsg("msgTranscribe", "error", err && err.status === 429 && tooLong
+      ? "Mistral a refusé ce fichier (erreur 429). " + tooLongMessage()
+      : humanizeError(err));
   } finally {
     clearInterval(timer);
     $("spinTranscribe").classList.remove("on");

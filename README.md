@@ -33,7 +33,7 @@ L'application utilise votre propre clé Mistral. Mistral propose un crédit grat
 ## Limites
 
 - Audio uniquement (mp3, m4a, wav, ogg, flac, webm). Pour une vidéo, extrayez d'abord la piste audio.
-- Jusqu'à environ 3 heures d'enregistrement par fichier (limite de Voxtral).
+- **Offre gratuite Mistral : environ 45 minutes par fichier.** Le compte gratuit plafonne Voxtral à 50 000 tokens par minute, et l'audio en consomme environ 750 par minute, plus le texte produit : une heure de réunion dépasse ce plafond (erreur 429). L'application affiche la durée du fichier et prévient avant l'envoi. Solutions : découper l'enregistrement, ou activer le paiement à l'usage chez Mistral (Voxtral accepte alors jusqu'à 3 heures par fichier).
 - Le compte rendu est produit par une IA : **relisez-le toujours** avant de le diffuser.
 
 ## Aspects techniques
