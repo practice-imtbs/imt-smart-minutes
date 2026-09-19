@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>IMT Smart Minutes</title>
+<meta name="description" content="Transformez l'enregistrement d'une réunion en transcription puis en compte rendu Word, avec votre propre clé Mistral." />
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><defs><linearGradient id='g' x1='0' x2='1'><stop offset='0' stop-color='%2312B5E5'/><stop offset='1' stop-color='%23AD1D89'/></linearGradient></defs><circle cx='16' cy='16' r='15' fill='url(%23g)'/><rect x='13' y='7' width='6' height='12' rx='3' fill='white'/><path d='M10 15a6 6 0 0 0 12 0M16 21v4' stroke='white' stroke-width='2' fill='none' stroke-linecap='round'/></svg>" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="style.css" />
+<!-- Génération .docx dans le navigateur (aucun serveur) -->
+<script src="https://cdn.jsdelivr.net/npm/docx@8.5.0/build/index.umd.js"></script>
+</head>
+<body>
+<div class="topbar"></div>
+<main>
+  <header class="hero">
+    <div class="brand"><span class="dot"></span>PracTice</div>
+    <span class="badge">Service PracTice · IMT-BS</span>
+    <h1 class="title">IMT Smart Minutes</h1>
+    <p class="subtitle">De votre <span class="c-cyan">enregistrement</span> au <span class="c-violet">compte rendu</span>, en quelques clics.</p>
+    <p class="lead">Déposez l'audio d'une réunion (celui de votre téléphone suffit) : l'application le transcrit en distinguant les intervenants, puis rédige un compte rendu prêt à télécharger au format Word. Tout se passe dans votre navigateur, avec votre propre clé Mistral.</p>
+  </header>
+
+  <!-- Étape 1 : clé API -->
+  <section class="step" id="step1">
+    <div class="step-head"><span class="step-num">1</span><h2>Votre clé API Mistral</h2></div>
+    <p class="caption">La transcription utilise le modèle Voxtral de Mistral AI. Chaque personne utilise sa propre clé.</p>
+    <label for="apiKey">Clé API</label>
+    <div class="key-row">
+      <input type="password" id="apiKey" placeholder="Collez votre clé ici" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false" data-lpignore="true" data-1p-ignore data-form-type="other" />
+      <button type="button" id="btnToggleKey" class="ghost" aria-label="Afficher ou masquer la clé">Afficher</button>
+      <button type="button" id="btnTestKey" class="secondary">Tester</button>
+    </div>
+    <label class="check"><input type="checkbox" id="rememberKey" /> Mémoriser ma clé sur cet appareil</label>
+    <div id="msgKey"></div>
+    <details class="help">
+      <summary>Comment obtenir ma clé en 2 minutes ?</summary>
+      <ol>
+        <li>Créez un compte gratuit sur <a href="https://console.mistral.ai/" target="_blank" rel="noopener">console.mistral.ai</a>.</li>
+        <li>Choisissez un espace de travail, puis activez l'offre d'essai ou le plan « Experiment ».</li>
+        <li>Ouvrez le menu <strong>API Keys</strong> et cliquez sur <strong>Create new key</strong>.</li>
+        <li>Copiez la clé (elle ne s'affiche qu'une fois) et collez-la ci-dessus.</li>
+      </ol>
+      <p class="caption">À titre indicatif, une heure de réunion coûte environ 0,20 € de transcription, plus quelques centimes pour la rédaction du compte rendu.</p>
+    </details>
+    <p class="caption">Votre clé reste dans votre navigateur et n'est envoyée qu'à l'API Mistral. Elle n'est mémorisée que si vous cochez la case.</p>
+  </section>
+
+  <!-- Étape 2 : audio -->
+  <section class="step disabled" id="step2">
+    <div class="step-head"><span class="step-num">2</span><h2>Déposez votre enregistrement</h2></div>
+    <label class="dropzone" id="dropzone" for="audioFile">
+      <input type="file" id="audioFile" accept=".mp3,.m4a,.wav,.ogg,.oga,.opus,.flac,.webm,.aac,audio/*" />
+      <strong>Glissez votre fichier audio ici</strong><br />
+      <span class="caption">ou cliquez pour le choisir · mp3, m4a, wav, ogg, flac, webm</span>
+      <div class="file-name" id="fileName"></div>
+    </label>
+    <div class="grid-2">
+      <div>
+        <label for="lang">Langue de la réunion</label>
+        <select id="lang">
+          <option value="fr" selected>Français</option>
+          <option value="en">Anglais</option>
+          <option value="">Détection automatique</option>
+        </select>
+      </div>
+    </div>
+    <div class="actions"><button id="btnTranscribe" class="primary-lg">Transcrire</button></div>
+    <div class="spinner" id="spinTranscribe"><span id="spinTranscribeText">Transcription en cours…</span></div>
+    <div id="msgTranscribe"></div>
+  </section>
+
+  <!-- Étape 3 : transcription -->
+  <section class="step disabled" id="step3">
+    <div class="step-head"><span class="step-num">3</span><h2>Votre transcription</h2></div>
+    <p class="caption">Les intervenants sont distingués automatiquement. Donnez-leur un nom si vous le souhaitez : écoutez leur première prise de parole pour les reconnaître.</p>
+
+    <h3>Nommer les intervenants <span class="caption">(facultatif)</span></h3>
+    <div id="nameEditor"></div>
+    <div class="actions">
+      <button id="btnIdentify" class="secondary">Suggérer les noms (IA)</button>
+    </div>
+    <div class="spinner" id="spinIdentify">Recherche des noms dans la conversation…</div>
+    <div id="msgIdentify"></div>
+
+    <div class="tabs" role="tablist">
+      <button class="tab active" id="tabRead" role="tab" aria-selected="true">Lecture</button>
+      <button class="tab" id="tabEdit" role="tab" aria-selected="false">Modifier le texte</button>
+    </div>
+    <div class="transcript-view" id="transcriptView"></div>
+    <textarea id="transcriptEditor" class="hidden" spellcheck="true" aria-label="Transcription modifiable"></textarea>
+    <div class="stats" id="transcriptStats"></div>
+
+    <div class="actions">
+      <button id="btnCopyTranscript" class="ghost">Copier le texte</button>
+      <button id="btnDownloadTxt" class="ghost">Télécharger .txt</button>
+      <button id="btnDownloadTranscriptMd" class="ghost">Télécharger .md</button>
+    </div>
+    <div id="msgTranscript"></div>
+  </section>
+
+  <!-- Étape 4 : compte rendu -->
+  <section class="step disabled" id="step4">
+    <div class="step-head"><span class="step-num">4</span><h2>Générer le compte rendu</h2></div>
+    <p class="caption">Complétez les informations ci-dessous (toutes facultatives), puis lancez la rédaction.</p>
+    <div class="grid-2">
+      <div>
+        <label for="metaEntete">En-tête du document</label>
+        <input type="text" id="metaEntete" value="IMT-BS · Projet PracTice" />
+      </div>
+      <div>
+        <label for="metaTitre">Nom de la réunion</label>
+        <input type="text" id="metaTitre" placeholder="Ex. : Point d'équipe PracTice" />
+      </div>
+      <div>
+        <label for="metaDate">Date</label>
+        <input type="date" id="metaDate" />
+      </div>
+      <div>
+        <label for="metaRedacteur">Rédacteur ou rédactrice</label>
+        <input type="text" id="metaRedacteur" placeholder="Prénom Nom" />
+      </div>
+    </div>
+    <label for="metaObjet">Objet <span class="caption">(laissé vide, l'IA le déduit)</span></label>
+    <input type="text" id="metaObjet" />
+    <label for="metaParticipants">Participants, un par ligne <span class="caption">(rôle entre parenthèses si besoin)</span></label>
+    <textarea id="metaParticipants" rows="3"></textarea>
+    <label for="chatModel">Modèle de rédaction</label>
+    <select id="chatModel">
+      <option value="mistral-medium-latest" selected>Mistral Medium (recommandé)</option>
+      <option value="mistral-large-latest">Mistral Large (plus soigné, plus coûteux)</option>
+      <option value="mistral-small-latest">Mistral Small (rapide et économique)</option>
+    </select>
+    <div class="actions"><button id="btnReport" class="primary-lg">Générer le compte rendu</button></div>
+    <div class="spinner" id="spinReport">Rédaction du compte rendu… (30 s à 2 min)</div>
+    <div id="msgReport"></div>
+
+    <div id="reportBlock" class="hidden">
+      <div class="report-preview" id="reportPreview"></div>
+      <div class="actions">
+        <button id="btnDownloadDocx">Télécharger en Word (.docx)</button>
+        <button id="btnCopyReport" class="ghost">Copier le texte</button>
+        <button id="btnDownloadReportMd" class="ghost">Télécharger .md</button>
+      </div>
+      <div id="msgReportActions"></div>
+      <div class="msg warn">Relisez toujours le compte rendu avant de le diffuser : l'IA peut mal comprendre un passage, se tromper sur un nom ou attribuer une action à la mauvaise personne.</div>
+    </div>
+  </section>
+
+  <footer>
+    <p>IMT Smart Minutes · Service PracTice, IMT Business School<br />
+    Aucune donnée n'est conservée : l'audio est envoyé uniquement à l'API Mistral pour la transcription, et tout disparaît à la fermeture de l'onglet.<br />
+    Ne traitez pas de données sensibles sans validation de votre établissement.</p>
+  </footer>
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

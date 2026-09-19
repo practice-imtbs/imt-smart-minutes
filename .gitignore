@@ -1,0 +1,7 @@
+# Exemples internes (vraies réunions) : ne jamais publier
+_exemples/
+*.srt
+*.pdf
+*.docx
+.DS_Store
+.claude/
